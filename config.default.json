@@ -1,0 +1,5 @@
+{
+  "bucket" : "bucket name",
+  "prefix" : "prefix",
+  "roleArn" : "role arn"
+}

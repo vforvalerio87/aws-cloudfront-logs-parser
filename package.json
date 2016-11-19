@@ -1,0 +1,11 @@
+{
+  "name": "aws-cloudfront-logs-parser",
+  "version": "1.0.0",
+  "description": "Parse logs from CloudFront looking for specific status codes; save output to file",
+  "main": "app.js",
+  "author": "Valerio Versace",
+  "license": "GPLv3",
+  "dependencies": {
+    "aws-sdk": "^2.6.12"
+  }
+}
