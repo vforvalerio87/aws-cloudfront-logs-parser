@@ -4,8 +4,9 @@ const config = require('./config');
 
 const AWS = require('aws-sdk');
 
-/* Uncomment the next line if you want to use temporary credentials from a role specified in the config file */
-AWS.config.credentials = new AWS.TemporaryCredentials({RoleArn: config.roleArn});
+if (config.roleArn && config.roleArn.substr(0, 3) === 'arn') {
+  AWS.config.credentials = new AWS.TemporaryCredentials({RoleArn: config.roleArn});
+}
 
 const fs = require('fs');
 const path = process.argv[3];
