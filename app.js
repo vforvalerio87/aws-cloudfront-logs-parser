@@ -49,10 +49,10 @@ s3.listObjectsV2(params).promise()
           })
         })
         .catch(err => {
-          throw err
+          console.error(err)
         })
     })
   })
   .catch(err => {
-    throw err
+    console.error(err)
   })
