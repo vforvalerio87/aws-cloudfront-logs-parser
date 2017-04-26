@@ -23,17 +23,15 @@ const params = {
   Prefix: config.prefix
 }
 
-s3.listObjectsV2(params, (err, data) => {
-  if (err) throw err
-  else if (data) {
+s3.listObjectsV2(params).promise()
+  .then(data => {
     data.Contents.forEach(content => {
       const params = {
         Bucket: config.bucket, 
         Key: content.Key
       }
-      s3.getObject(params, (err, data) => {
-        if (err) throw err
-        else if (data) {
+      s3.getObject(params).promise()
+        .then(data => {
           zlib.gunzip(data.Body, (err, data) => {
             if (err) throw err
             else if (data) {
@@ -49,8 +47,12 @@ s3.listObjectsV2(params, (err, data) => {
               })
             }
           })
-        }
-      })
+        })
+        .catch(err => {
+          throw err
+        })
     })
-  }
-})
+  })
+  .catch(err => {
+    throw err
+  })
