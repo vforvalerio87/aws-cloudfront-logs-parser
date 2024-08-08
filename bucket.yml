@@ -1,0 +1,402 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: > 
+  Sets up an encrypted bucket with options for cross-region replication and cross-account access.
+
+  
+Parameters:
+
+
+### Bucket ###
+  pBucketName:
+    Type: String
+    Description: Name of bucket
+  
+  pBucketReadWritePrincipals:
+    Type: CommaDelimitedList
+    Description: Optional. Comma delimited list of principals that need read and write access to the bucket
+  
+  pBucketReadOnlyPrincipals:
+    Type: CommaDelimitedList
+    Description: Optional. Comma delimited list of principals that need read only access to the bucket
+  
+  pReplicationTarget:
+    Type: String
+    Description: Name of replication destination bucket (Leave empty if you don't need replication)
+  
+  pRegionCode:
+    Type: String
+    Description: Region of the destination bucket (Leave empty if you don't need replication)
+
+
+### Tagging ###
+  pEnvironmentTag:
+    Type: String
+    Description: Environment for default resource tagging
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+      - sandbox
+      - test
+      - development
+      - qa
+
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+
+    ParameterLabels:
+      pBucketName:
+        default: Bucket name
+      pBucketReadWritePrincipals:
+        default: Bucket Read Write Principals
+      pBucketReadOnlyPrincipals:
+        default: Bucket Read Only Principals
+      pReplicationTarget:
+        default: Replication Target
+      pRegionCode:
+        default: Destination Region
+      pEnvironmentTag:
+        default: Environment Tag
+
+    ParameterGroups:
+      - Label:
+          default: Bucket Settings
+        Parameters:
+            - pBucketName
+            - pBucketReadWritePrincipals
+            - pBucketReadOnlyPrincipals
+            - pReplicationTarget
+            - pRegionCode
+      - Label:
+          default: Tagging
+        Parameters:
+            - pEnvironmentTag
+
+
+Conditions:
+
+  CondEnableBucketReplication: !Not [!Equals [!Ref pReplicationTarget, '']]
+  CondBucketReadWriteAccess: !Not [!Equals [!Join ['', !Ref pBucketReadWritePrincipals], '']]
+  CondBucketReadOnlyAccess: !Not [!Equals [!Join ['', !Ref pBucketReadOnlyPrincipals], '']]
+  CondCreateBucketPolicy: !Or [!Condition CondBucketReadWriteAccess, !Condition CondBucketReadOnlyAccess]
+
+
+Resources:
+
+
+### Bucket ###
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref pBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: 
+                Fn::ImportValue: !Sub s3KeyArn-${AWS::Region}
+      VersioningConfiguration:
+        Status: Enabled
+      ReplicationConfiguration: 
+        !If 
+          - CondEnableBucketReplication
+          - Role: !GetAtt bucketReplicationRole.Arn
+            Rules:
+              - Destination:
+                  Bucket: !Sub arn:aws:s3:::${pReplicationTarget}
+                  EncryptionConfiguration: 
+                    ReplicaKmsKeyID: !Sub 
+                      - arn:aws:kms:${pRegionCode}:${AWS::AccountId}:key/${keyID}
+                      - keyID: 
+                          Fn::ImportValue: !Sub s3KeyId-${AWS::Region}
+                DeleteMarkerReplication:
+                  Status: Enabled
+                Id: !Sub ${AWS::StackName}-replication-rule
+                SourceSelectionCriteria:
+                  SseKmsEncryptedObjects:
+                    Status: Enabled
+                Filter:
+                  Prefix: ""
+                Priority: 0
+                Status: Enabled
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: controlled-by
+          Value: !Sub cloudformation-${AWS::StackName}
+        - Key: environment
+          Value: !Ref pEnvironmentTag
+
+
+### Bucket Policy ###
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CondCreateBucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - !If 
+            - CondBucketReadWriteAccess
+            - 
+              Effect: Allow
+              Principal: 
+                AWS: !Ref pBucketReadWritePrincipals
+              Action: 
+                - s3:ListBucket
+                - s3:PutObject
+                - s3:GetObject
+                - s3:GetObjectTagging
+                - s3:DeleteObject
+                - s3:DeleteObjectVersion
+                - s3:GetObjectVersion
+                - s3:GetObjectVersionTagging
+                - s3:GetObjectACL
+                - s3:PutObjectACL
+              Resource: 
+                - !Sub arn:aws:s3:::${Bucket}
+                - !Sub arn:aws:s3:::${Bucket}/*
+            - !Ref AWS::NoValue
+          - !If 
+            - CondBucketReadOnlyAccess
+            - 
+              Effect: Allow
+              Principal: 
+                AWS: !Ref pBucketReadOnlyPrincipals
+              Action: 
+                - s3:ListBucket
+                - s3:GetObject
+                - s3:GetObjectTagging
+                - s3:GetObjectVersion
+                - s3:GetObjectVersionTagging
+                - s3:GetObjectACL
+              Resource: 
+                - !Sub arn:aws:s3:::${Bucket}
+                - !Sub arn:aws:s3:::${Bucket}/*
+            - !Ref AWS::NoValue
+
+
+### Role for Bucket replication ###
+  bucketReplicationRole:
+    Type: AWS::IAM::Role
+    Condition: CondEnableBucketReplication
+    Properties:
+      Description: Role for S3 service to enable replication
+      RoleName: !Sub ${AWS::StackName}-s3-replication-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-s3-replication-policy
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+            - Action:
+              - s3:ListBucket
+              - s3:GetReplicationConfiguration
+              - s3:GetObjectVersionForReplication
+              - s3:GetObjectVersionAcl
+              - s3:GetObjectVersionTagging
+              Effect: Allow
+              Resource:
+              - !Sub arn:aws:s3:::${pBucketName}
+              - !Sub arn:aws:s3:::${pBucketName}/*
+            - Action:
+              - s3:ReplicateObject
+              - s3:ReplicateDelete
+              - s3:ReplicateTags
+              Effect: Allow
+              Condition:
+                StringLikeIfExists:
+                  s3:x-amz-server-side-encryption:
+                  - aws:kms
+                  - AES256
+                  - aws:kms:dsse
+                  s3:x-amz-server-side-encryption-aws-kms-key-id:
+                  - !Sub 
+                    - arn:aws:kms:${pRegionCode}:${AWS::AccountId}:key/${keyID}
+                    - keyID: 
+                        Fn::ImportValue: !Sub s3KeyId-${AWS::Region}
+              Resource: !Sub arn:aws:s3:::${pReplicationTarget}/*
+            - Action:
+              - kms:Decrypt
+              Effect: Allow
+              Condition:
+                StringLike:
+                  kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+                  kms:EncryptionContext:aws:s3:arn:
+                  - !Sub arn:aws:s3:::${pBucketName}/*
+              Resource:
+              - Fn::ImportValue: !Sub s3KeyArn-${AWS::Region}
+            - Action:
+              - kms:Encrypt
+              Effect: Allow
+              Condition:
+                StringLike:
+                  kms:ViaService: !Sub s3.${pRegionCode}.amazonaws.com
+                  kms:EncryptionContext:aws:s3:arn:
+                  - !Sub arn:aws:s3:::${pReplicationTarget}/*
+              Resource:
+              - !Sub 
+                - arn:aws:kms:${pRegionCode}:${AWS::AccountId}:key/${keyID}
+                - keyID: 
+                    Fn::ImportValue: !Sub s3KeyId-${AWS::Region}
+
+
+### Custom resource to empty bucket ###
+  EmptyBucketFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Function to empty the bucket before deleting
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt EmptyBucketFunctionRole.Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          LAMBDA_TIMEOUT: 120
+          BUCKET_NAME: !Ref Bucket
+      Code:
+        ZipFile: |
+          const { S3Client, ListObjectVersionsCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
+          const cfnResponse = require("cfn-response");
+
+          function response(event, context, status, data) {
+              return new Promise(() => cfnResponse.send(event, context, status, data))
+          }
+
+          const timeout = parseInt(process.env.LAMBDA_TIMEOUT) || 60
+
+          exports.handler = async (event, context) => {
+
+              console.log(event);
+
+              const t = setTimeout(() => {
+                  console.log("Lambda went on timeout!");
+                  return response(event, context, cfnResponse.FAILED);
+              }, 1000 * (timeout - 2));
+
+              try {
+
+                  if (event?.RequestType === "Delete") {
+                      console.log('Called "Delete" on resource');
+                      const client = new S3Client({ region: process.env.AWS_REGION });
+                      const bucketName = process.env.BUCKET_NAME;
+                      const listInput = {
+                          Bucket: bucketName
+                      };
+                      const listCommand = new ListObjectVersionsCommand(listInput);
+                      const deleteInput = {
+                          Bucket: bucketName
+                      };
+                      const deleteCommand = new DeleteObjectsCommand(deleteInput);
+
+                      let continuation = true;
+
+                      while (continuation) {
+                          const { Versions, DeleteMarkers, IsTruncated, NextKeyMarker, NextVersionIdMarker } = await client.send(listCommand);
+                          const objectsToDelete = [];
+                          if (Versions) {
+                              for (const obj of Versions) {
+                                  objectsToDelete.push({ Key: obj.Key, VersionId: obj.VersionId });
+                              }
+                          }
+                          if (DeleteMarkers) {
+                              for (const obj of DeleteMarkers) {
+                                  objectsToDelete.push({ Key: obj.Key, VersionId: obj.VersionId });
+                              }
+                          }
+                          if (objectsToDelete.length > 0) {
+                              deleteInput.Delete = { Objects: objectsToDelete };
+                              console.log(await client.send(deleteCommand));
+                          }
+                          else {
+                              console.log("Bucket already empty");
+                              clearTimeout(t);
+                              return response(event, context, cfnResponse.SUCCESS);
+                          }
+                          continuation = IsTruncated;
+                          if (IsTruncated) {
+                              listCommand.input.KeyMarker = NextKeyMarker;
+                              listCommand.input.VersionIdMarker = NextVersionIdMarker;
+                              console.log("PAGINA");
+                          }
+                      }
+                      console.log("Bucket now empty");
+                      clearTimeout(t);
+                      return response(event, context, cfnResponse.SUCCESS);
+                  }
+                  else {
+                      clearTimeout(t);
+                      return response(event, context, cfnResponse.SUCCESS);
+                  }
+              
+              } catch (error) {
+                  console.log(error);
+                  clearTimeout(t);
+                  return response(event, context, cfnResponse.FAILED);
+              }
+          }
+
+  EmptyBucketFunctionInvoke:
+    Type: 'AWS::CloudFormation::CustomResource'
+    DependsOn: EmptyBucketLambdaLogGroup
+    Version: '1.0'
+    Properties:
+      ServiceToken: !GetAtt EmptyBucketFunction.Arn
+  
+  EmptyBucketLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EmptyBucketFunction}
+      RetentionInDays: 7
+  
+  EmptyBucketFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-bucket-function-policy
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: 
+                  - !Sub arn:aws:s3:::${Bucket}
+                  - !Sub arn:aws:s3:::${Bucket}/*
+
+
+Outputs:
+  
+  bucketName:
+    Description: Name of the bucket
+    Value: !Ref Bucket
+    Export:
+      Name: !Sub ${AWS::StackName}-name
+  
+  bucketReplicationRole:
+    Condition: CondEnableBucketReplication
+    Description: Bucket Replication Role 
+    Value: !Ref bucketReplicationRole
+    Export:
+      Name: !Sub ${AWS::StackName}-s3-replication-role
+      
